@@ -16,6 +16,7 @@ import com.deenbrowser.app.data.models.ProtectionSettings
 import com.deenbrowser.app.data.models.TabItem
 import com.deenbrowser.app.protection.FaceProtectionEngine
 import com.deenbrowser.app.protection.ImageProcessingManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,6 +30,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     val downloadManagerHelper = DownloadManagerHelper(application)
     val faceProtectionEngine = FaceProtectionEngine(viewModelScope)
     val imageProcessingManager = ImageProcessingManager(viewModelScope)
+
+    var onBlurImageRequested: ((src: String, mode: String, blurRadius: Float) -> Unit)? = null
 
     val tabs: StateFlow<List<TabItem>> = tabManager.tabs
     val activeTabIndex: StateFlow<Int> = tabManager.activeTabIndex
@@ -74,6 +77,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     val activeTab: TabItem?
         get() = tabManager.activeTab
+
+    init {
+        imageProcessingManager.onFacesFoundInImage = { src, hasFaces ->
+            if (hasFaces) {
+                val settings = protectionSettings.value
+                val modeName = settings.detectionMode.name
+                val radius = settings.blurRadius
+                viewModelScope.launch(Dispatchers.Main) {
+                    onBlurImageRequested?.invoke(src, modeName, radius)
+                }
+            }
+        }
+    }
 
     fun startProtectionLoop(webViewGetter: () -> WebView?) {
         faceProtectionEngine.startProtectionLoop(webViewGetter) { protectionSettings.value }

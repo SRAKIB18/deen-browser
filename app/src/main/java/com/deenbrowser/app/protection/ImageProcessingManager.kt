@@ -2,6 +2,8 @@ package com.deenbrowser.app.protection
 
 import android.graphics.BitmapFactory
 import android.graphics.RectF
+import android.webkit.CookieManager
+import com.deenbrowser.app.core.utils.Constants
 import com.deenbrowser.app.data.models.DiscoveredImage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -11,6 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import java.net.HttpURLConnection
 import java.net.URL
 
 class ImageProcessingManager(
@@ -84,12 +87,24 @@ class ImageProcessingManager(
                 normalized
             } else if (srcUrl.startsWith("http://") || srcUrl.startsWith("https://")) {
                 val url = URL(srcUrl)
-                val connection = url.openConnection()
-                connection.connectTimeout = 3000
-                connection.readTimeout = 3000
-                val inputStream = connection.getInputStream()
+                val connection = url.openConnection() as HttpURLConnection
+                connection.connectTimeout = 4000
+                connection.readTimeout = 4000
+                connection.setRequestProperty("User-Agent", Constants.MOBILE_USER_AGENT)
+
+                val cookie = try {
+                    CookieManager.getInstance().getCookie(srcUrl)
+                } catch (e: Exception) {
+                    null
+                }
+                if (!cookie.isNullOrEmpty()) {
+                    connection.setRequestProperty("Cookie", cookie)
+                }
+
+                val inputStream = connection.inputStream
                 val bitmap = BitmapFactory.decodeStream(inputStream) ?: return@withContext null
                 inputStream.close()
+                connection.disconnect()
 
                 val faces = faceDetector.detectFaces(bitmap)
                 val w = bitmap.width.toFloat()

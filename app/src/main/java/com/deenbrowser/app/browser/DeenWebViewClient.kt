@@ -69,25 +69,35 @@ class DeenWebViewClient(
     }
 
     /**
-     * Injects JS to monitor DOM image elements, lazy loaded images, and apply In-DOM CSS Blurring.
+     * Injects JS to insert global CSS blur rules, monitor DOM image elements, lazy loaded images, and report to Native.
      */
     private fun injectImageObserverScript(webView: WebView?) {
         val jsScript = """
             (function() {
-                window.DeenApplyBlurToImage = function(src, mode, blurRadius) {
+                // 1. Inject Global CSS Stylesheet for In-DOM Blurring
+                if (!document.getElementById('deen-blur-stylesheet')) {
+                    var style = document.createElement('style');
+                    style.id = 'deen-blur-stylesheet';
+                    style.innerHTML = 'img[data-deen-blur="true"] { filter: blur(28px) !important; -webkit-filter: blur(28px) !important; transition: filter 0.15s ease-in-out !important; } ' +
+                                      'img[data-deen-strict="true"] { filter: brightness(0) blur(6px) !important; -webkit-filter: brightness(0) blur(6px) !important; transition: filter 0.15s ease-in-out !important; }';
+                    (document.head || document.documentElement).appendChild(style);
+                }
+
+                // 2. Function to mark DOM elements for blurring
+                window.DeenApplyBlurToImage = function(srcUrl, mode, blurRadius) {
                     try {
-                        var imgs = document.getElementsByTagName('img');
+                        var imgs = document.querySelectorAll('img');
                         for (var i = 0; i < imgs.length; i++) {
                             var img = imgs[i];
-                            if (img.src === src || img.getAttribute('src') === src) {
+                            var currentSrc = img.src || img.getAttribute('src') || img.getAttribute('data-src') || '';
+                            if (currentSrc && (currentSrc === srcUrl || currentSrc.indexOf(srcUrl) !== -1 || srcUrl.indexOf(currentSrc) !== -1)) {
                                 if (mode === 'STRICT') {
-                                    img.style.filter = 'brightness(0) blur(4px)';
+                                    img.setAttribute('data-deen-strict', 'true');
+                                    img.removeAttribute('data-deen-blur');
                                 } else {
-                                    var radius = blurRadius || 24;
-                                    img.style.filter = 'blur(' + radius + 'px)';
+                                    img.setAttribute('data-deen-blur', 'true');
+                                    img.removeAttribute('data-deen-strict');
                                 }
-                                img.style.transition = 'filter 0.15s ease-in-out';
-                                img.dataset.deenBlurred = 'true';
                             }
                         }
                     } catch(e) {}
@@ -96,15 +106,17 @@ class DeenWebViewClient(
                 if (window.deenObserverInjected) return;
                 window.deenObserverInjected = true;
                 
+                // 3. Scan DOM for visible images
                 function scanImages() {
                     const images = document.getElementsByTagName('img');
                     const imgData = [];
                     for (let i = 0; i < images.length; i++) {
                         const img = images[i];
                         const rect = img.getBoundingClientRect();
-                        if (rect.width > 20 && rect.height > 20 && img.src) {
+                        const src = img.src || img.getAttribute('src') || img.getAttribute('data-src');
+                        if (rect.width > 20 && rect.height > 20 && src) {
                             imgData.push({
-                                src: img.src,
+                                src: src,
                                 left: rect.left,
                                 top: rect.top,
                                 width: rect.width,
@@ -117,13 +129,13 @@ class DeenWebViewClient(
                     }
                 }
                 
-                window.addEventListener('scroll', scanImages);
-                window.addEventListener('resize', scanImages);
+                window.addEventListener('scroll', scanImages, { passive: true });
+                window.addEventListener('resize', scanImages, { passive: true });
                 
                 const observer = new MutationObserver(function(mutations) {
                     scanImages();
                 });
-                observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] });
+                observer.observe(document.body || document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'data-src', 'srcset'] });
                 
                 scanImages();
             })();

@@ -102,6 +102,10 @@ fun BrowserScreen(
     var showMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
+        viewModel.onBlurImageRequested = { src, mode, radius ->
+            val escapedSrc = src.replace("'", "\\'")
+            webViewRef?.evaluateJavascript("if(window.DeenApplyBlurToImage) window.DeenApplyBlurToImage('$escapedSrc', '$mode', $radius);", null)
+        }
         viewModel.startProtectionLoop { webViewRef }
     }
 
