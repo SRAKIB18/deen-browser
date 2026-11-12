@@ -1,15 +1,21 @@
 package com.deenbrowser.app.browser
 
 import android.app.Application
+import android.graphics.Rect
+import android.graphics.RectF
 import android.webkit.JavascriptInterface
+import android.webkit.WebView
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.deenbrowser.app.core.utils.Constants
 import com.deenbrowser.app.core.utils.UrlUtils
 import com.deenbrowser.app.data.models.Bookmark
+import com.deenbrowser.app.data.models.DetectionMode
 import com.deenbrowser.app.data.models.HistoryItem
 import com.deenbrowser.app.data.models.ProtectionSettings
 import com.deenbrowser.app.data.models.TabItem
+import com.deenbrowser.app.protection.FaceProtectionEngine
+import com.deenbrowser.app.protection.ImageProcessingManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,9 +27,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     val repository = BrowserRepository(application)
     val tabManager = TabManager()
     val downloadManagerHelper = DownloadManagerHelper(application)
+    val faceProtectionEngine = FaceProtectionEngine(viewModelScope)
+    val imageProcessingManager = ImageProcessingManager(viewModelScope)
 
     val tabs: StateFlow<List<TabItem>> = tabManager.tabs
     val activeTabIndex: StateFlow<Int> = tabManager.activeTabIndex
+
+    val detectedFaceRects: StateFlow<List<Rect>> = faceProtectionEngine.detectedFaceRects
+    val bitmapWidth: StateFlow<Int> = faceProtectionEngine.bitmapWidth
+    val bitmapHeight: StateFlow<Int> = faceProtectionEngine.bitmapHeight
+
+    val mappedOverlayRects: StateFlow<List<RectF>> = imageProcessingManager.mappedOverlayRects
 
     private val _currentUrlInput = MutableStateFlow(Constants.DEFAULT_HOME_URL)
     val currentUrlInput: StateFlow<String> = _currentUrlInput.asStateFlow()
@@ -60,6 +74,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     val activeTab: TabItem?
         get() = tabManager.activeTab
+
+    fun startProtectionLoop(webViewGetter: () -> WebView?) {
+        faceProtectionEngine.startProtectionLoop(webViewGetter) { protectionSettings.value }
+    }
+
+    fun triggerFrameScan(webViewGetter: () -> WebView?) {
+        faceProtectionEngine.triggerFrameScan(webViewGetter) { protectionSettings.value }
+    }
 
     fun loadUrlOrSearch(input: String) {
         val formatted = UrlUtils.formatUrlOrSearch(input)
@@ -119,7 +141,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val newDesktopMode = !currentTab.isDesktopMode
         var currentUrl = currentTab.url
 
-        // Convert mobile subdomains to desktop subdomains and vice versa
         if (newDesktopMode) {
             if (currentUrl.contains("://m.")) {
                 currentUrl = currentUrl.replace("://m.", "://www.")
@@ -200,11 +221,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    // JS Bridge interface for WebView image scanning
+    override fun onCleared() {
+        super.onCleared()
+        faceProtectionEngine.close()
+        imageProcessingManager.close()
+    }
+
     inner class DeenJSBridge {
         @JavascriptInterface
         fun onImagesDiscovered(jsonData: String) {
-            // Process discovered DOM image elements in Phase 2 & 3
+            if (protectionSettings.value.isMasterEnabled && protectionSettings.value.detectionMode != DetectionMode.OFF) {
+                imageProcessingManager.processDiscoveredImagesJson(jsonData)
+            }
         }
     }
 }

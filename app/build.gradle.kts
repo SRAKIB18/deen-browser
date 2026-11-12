@@ -50,6 +50,9 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.8")
     implementation(libs.androidx.webkit)
 
+    // SwipeRefreshLayout for WebView
+    implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
+
     // Room
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)

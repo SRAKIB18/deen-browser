@@ -69,11 +69,30 @@ class DeenWebViewClient(
     }
 
     /**
-     * Injects JS to monitor DOM image elements, lazy loaded images, and scroll position.
+     * Injects JS to monitor DOM image elements, lazy loaded images, and apply In-DOM CSS Blurring.
      */
     private fun injectImageObserverScript(webView: WebView?) {
         val jsScript = """
             (function() {
+                window.DeenApplyBlurToImage = function(src, mode, blurRadius) {
+                    try {
+                        var imgs = document.getElementsByTagName('img');
+                        for (var i = 0; i < imgs.length; i++) {
+                            var img = imgs[i];
+                            if (img.src === src || img.getAttribute('src') === src) {
+                                if (mode === 'STRICT') {
+                                    img.style.filter = 'brightness(0) blur(4px)';
+                                } else {
+                                    var radius = blurRadius || 24;
+                                    img.style.filter = 'blur(' + radius + 'px)';
+                                }
+                                img.style.transition = 'filter 0.15s ease-in-out';
+                                img.dataset.deenBlurred = 'true';
+                            }
+                        }
+                    } catch(e) {}
+                };
+
                 if (window.deenObserverInjected) return;
                 window.deenObserverInjected = true;
                 

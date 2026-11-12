@@ -67,8 +67,11 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.deenbrowser.app.core.utils.Constants
+import com.deenbrowser.app.data.models.DetectionMode
 import com.deenbrowser.app.data.models.ProtectionSettings
+import com.deenbrowser.app.protection.FaceBlurOverlayCanvas
 import com.deenbrowser.app.ui.theme.DeenForestPrimary
 import com.deenbrowser.app.ui.theme.DeenGoldAccent
 import com.deenbrowser.app.ui.theme.DeenMintAccent
@@ -86,14 +89,21 @@ fun BrowserScreen(
     onOpenSettings: () -> Unit
 ) {
     val context = LocalContext.current
-    val activeTab = viewModel.activeTab
     val tabs by viewModel.tabs.collectAsState()
+    val activeTabIndex by viewModel.activeTabIndex.collectAsState()
+    val activeTab = tabs.getOrNull(activeTabIndex)
     val isBookmarked by viewModel.isBookmarked.collectAsState()
     val protectionSettings by viewModel.protectionSettings.collectAsState()
     val currentUrlInput by viewModel.currentUrlInput.collectAsState()
 
+    val mappedOverlayRects by viewModel.mappedOverlayRects.collectAsState()
+
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var showMenu by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        viewModel.startProtectionLoop { webViewRef }
+    }
 
     // Intercept hardware back button for WebView navigation
     BackHandler(enabled = webViewRef?.canGoBack() == true) {
@@ -189,62 +199,75 @@ fun BrowserScreen(
             }
         }
 
-        // Main WebView Viewport
+        // Main WebView Viewport with Native SwipeRefreshLayout and AI Face Blur Overlay
         Box(modifier = Modifier.weight(1f)) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
-                    WebView(ctx).apply {
-                        layoutParams = ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
+                    SwipeRefreshLayout(ctx).apply {
+                        setColorSchemeColors(android.graphics.Color.parseColor("#1B4D3E"))
+                        val webView = WebView(ctx).apply {
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
 
-                        settings.apply {
-                            javaScriptEnabled = true
-                            domStorageEnabled = true
-                            databaseEnabled = true
-                            useWideViewPort = activeTab?.isDesktopMode == true
-                            loadWithOverviewMode = activeTab?.isDesktopMode == true
-                            builtInZoomControls = true
-                            displayZoomControls = false
-                            setSupportZoom(true)
-                            mediaPlaybackRequiresUserGesture = false
-                            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                            userAgentString = if (activeTab?.isDesktopMode == true) Constants.DESKTOP_USER_AGENT else Constants.MOBILE_USER_AGENT
-                        }
-
-                        CookieManager.getInstance().setAcceptCookie(true)
-                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-
-                        addJavascriptInterface(viewModel.DeenJSBridge(), "DeenJSBridge")
-
-                        webViewClient = DeenWebViewClient(
-                            context = ctx,
-                            isDesktopMode = { activeTab?.isDesktopMode == true },
-                            onPageStarted = { url -> viewModel.onPageStarted(url) },
-                            onPageFinished = { url, title -> viewModel.onPageFinished(url, title) },
-                            onUrlChanged = { url ->
-                                viewModel.updateNavigationState(canGoBack(), canGoForward())
+                            settings.apply {
+                                javaScriptEnabled = true
+                                domStorageEnabled = true
+                                databaseEnabled = true
+                                useWideViewPort = activeTab?.isDesktopMode == true
+                                loadWithOverviewMode = activeTab?.isDesktopMode == true
+                                builtInZoomControls = true
+                                displayZoomControls = false
+                                setSupportZoom(true)
+                                mediaPlaybackRequiresUserGesture = false
+                                mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                                userAgentString = if (activeTab?.isDesktopMode == true) Constants.DESKTOP_USER_AGENT else Constants.MOBILE_USER_AGENT
                             }
-                        )
 
-                        webChromeClient = DeenWebChromeClient(
-                            onProgressChanged = { progress -> viewModel.onProgressChanged(progress) },
-                            onTitleReceived = { title -> viewModel.onPageFinished(url ?: "", title) },
-                            onFaviconReceived = { favicon -> }
-                        )
+                            CookieManager.getInstance().setAcceptCookie(true)
+                            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
-                        setDownloadListener { url, userAgent, contentDisposition, mimeType, contentLength ->
-                            viewModel.downloadManagerHelper.downloadFile(url, userAgent, contentDisposition, mimeType)
+                            addJavascriptInterface(viewModel.DeenJSBridge(), "DeenJSBridge")
+
+                            webViewClient = DeenWebViewClient(
+                                context = ctx,
+                                isDesktopMode = { activeTab?.isDesktopMode == true },
+                                onPageStarted = { url -> viewModel.onPageStarted(url) },
+                                onPageFinished = { url, title ->
+                                    viewModel.onPageFinished(url, title)
+                                    viewModel.triggerFrameScan { this }
+                                },
+                                onUrlChanged = { url ->
+                                    viewModel.updateNavigationState(canGoBack(), canGoForward())
+                                }
+                            )
+
+                            webChromeClient = DeenWebChromeClient(
+                                onProgressChanged = { progress -> viewModel.onProgressChanged(progress) },
+                                onTitleReceived = { title -> viewModel.onPageFinished(url ?: "", title) },
+                                onFaviconReceived = { favicon -> }
+                            )
+
+                            setDownloadListener { url, userAgent, contentDisposition, mimeType, contentLength ->
+                                viewModel.downloadManagerHelper.downloadFile(url, userAgent, contentDisposition, mimeType)
+                            }
+
+                            activeTab?.url?.let { loadUrl(it) }
                         }
 
-                        webViewRef = this
-                        activeTab?.url?.let { loadUrl(it) }
+                        addView(webView)
+                        webViewRef = webView
+
+                        setOnRefreshListener {
+                            webView.reload()
+                        }
                     }
                 },
-                update = { webView ->
-                    webViewRef = webView
+                update = { swipeRefresh ->
+                    swipeRefresh.isRefreshing = activeTab?.isLoading == true
+                    val webView = webViewRef ?: return@AndroidView
                     val isDesktop = activeTab?.isDesktopMode == true
                     val desiredUserAgent = if (isDesktop) Constants.DESKTOP_USER_AGENT else Constants.MOBILE_USER_AGENT
 
@@ -253,15 +276,29 @@ fun BrowserScreen(
 
                     if (webView.settings.userAgentString != desiredUserAgent) {
                         webView.settings.userAgentString = desiredUserAgent
-                        webView.reload()
-                    }
-
-                    val targetUrl = activeTab?.url ?: Constants.DEFAULT_HOME_URL
-                    if (webView.url != targetUrl && targetUrl.isNotEmpty() && targetUrl != "about:blank") {
-                        webView.loadUrl(targetUrl)
+                        val currentUrl = activeTab?.url ?: webView.url ?: Constants.DEFAULT_HOME_URL
+                        if (currentUrl.isNotEmpty() && currentUrl != "about:blank") {
+                            webView.loadUrl(currentUrl)
+                        }
+                    } else {
+                        val targetUrl = activeTab?.url ?: Constants.DEFAULT_HOME_URL
+                        if (webView.url != targetUrl && targetUrl.isNotEmpty() && targetUrl != "about:blank") {
+                            webView.loadUrl(targetUrl)
+                        }
                     }
                 }
             )
+
+            // AI Face Blur / Hide Overlay Canvas Layer
+            if (protectionSettings.isMasterEnabled && protectionSettings.detectionMode != DetectionMode.OFF) {
+                FaceBlurOverlayCanvas(
+                    mappedFaces = mappedOverlayRects,
+                    detectionMode = protectionSettings.detectionMode,
+                    hideWholeImage = protectionSettings.hideWholeImage,
+                    blurRadius = protectionSettings.blurRadius,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
 
         // Bottom Navigation Bar
